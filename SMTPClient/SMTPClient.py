@@ -2,16 +2,21 @@
 import socket
 import ssl
 import re
+from base64 import b64encode
 from sys import exit
 
 
 class SMTP_CLIENT:
-    """ SMTP Client for sending mail primarily through Gmail """
+    """ SMTP Client for sending mail primarily through Gmail (Networking studies project!)"""
 
-    def __init__(self, receiver, name, message):
+    def __init__(self, name, receiver, message):
         self.receiver = receiver
         self.name = name
         self.message = message
+
+        # AUTH only
+        self.username = ''
+        self.password = ''
 
         self._socket = None
 
@@ -27,6 +32,7 @@ class SMTP_CLIENT:
             'helo': ('EHLO ' + self.name + '\r\n', '250'),
             'ehlo': ('EHLO ' + self.name + '\r\n', '250'),
             'starttls': ('STARTTLS\r\n', '220'),
+            'auth': ('AUTH PLAIN ', '250'),
             'mail_from': ('MAIL FROM: <' + self.name + '>\r\n', '250'),
             'rcpt_to': ('RCPT TO: <' + self.receiver + '>\r\n', '250'),
             'data': ('DATA\r\n', '354'),
@@ -76,7 +82,8 @@ class SMTP_CLIENT:
             try:
                 # Establishing connection
                 if res_code != '220':
-                    return
+                    self._send_QUIT()
+                    return 1
 
                 # EHLO
                 ehlo = self._get_command('ehlo')
@@ -84,7 +91,7 @@ class SMTP_CLIENT:
                 res_code, res_message = self._parse_SMTP_response(1024)
                 if res_code != ehlo[1]:
                     self._send_QUIT()
-                    return
+                    return 1
 
                 # STARTTLS
                 ehlo = self._get_command('starttls')
@@ -92,7 +99,7 @@ class SMTP_CLIENT:
                 res_code, res_message = self._parse_SMTP_response(1024)
                 if res_code != ehlo[1]:
                     self._send_QUIT()
-                    return
+                    return 1
 
                 # TLS Handshake
                 context = ssl.create_default_context()
@@ -100,27 +107,37 @@ class SMTP_CLIENT:
                     self._socket, server_hostname=self._mailservers[hostname][0])
                 self._socket = tls_socket
 
-                # TODO: EHLO
+                # EHLO
                 ehlo = self._get_command('ehlo')
                 self._send_SMTP_message(ehlo[0].encode())
                 res_code, res_message = self._parse_SMTP_response(1024)
                 if res_code != ehlo[1]:
                     self._send_QUIT()
-                    return
+                    return 1
 
-                self._send_QUIT()
+                # AUTH
+                has_auth = re.search(r'AUTH\s(.+\s?)+?', res_message)
+                # has_auth.group(1) returns the params for auth command
+                if has_auth != None:
+                    self.username = input('Username: ')
+                    self.password = input('Password: ')
+                    auth = self._get_command('auth')
+                    self._send_SMTP_message(auth[0].encode())
+                    self._send_SMTP_message(
+                        b64encode(f'\0{self.username}\0{self.password}'.encode())+'\r\n'.encode())
+                    res_code, res_message = self._parse_SMTP_response(1024)
+                    if res_code != '235':
+                        self._send_QUIT()
+                        return 1
+
+                return
 
             except Exception as e:
                 print(e)
 
-            return self._socket
         else:
             print('Unsupported mailserver')
             return
-
-    def _TLS_AUTH(self, socket, username, password):
-        # TODO: SMTP-AUTH(?)
-        pass
 
     def send_mail(self, TLS=True):
         """ Main function the mail sending process """
@@ -130,25 +147,62 @@ class SMTP_CLIENT:
         # Assign port number and negotiate TLS
         if TLS == True:
             port = self._ports[2]
-            self._socket = self._TLS_EHLO(hostname, port)
+            result = self._TLS_EHLO(hostname, port)
+
         else:
             # No TLS
             port = self._ports[1]
             # TODO: self._socket = self._HELO(hostname, port)
 
         # TODO: MAIL FROM
+        mail_from = f'MAIL FROM: <{self.username}>\r\n'
+
+        self._send_SMTP_message(mail_from.encode())
+        res_code, res_message = self._parse_SMTP_response(1024)
+        if res_code != '250':
+            self._send_QUIT()
+            return 1
+
         # TODO: RCPT TO
+        rcpt_to = self._get_command('rcpt_to')
+        self._send_SMTP_message(rcpt_to[0].encode())
+        res_code, res_message = self._parse_SMTP_response(1024)
+        if res_code != rcpt_to[1]:
+            self._send_QUIT()
+            return 1
+
         # TODO: DATA - use email module to form messages
+        data = self._get_command('data')
+        self._send_SMTP_message(data[0].encode())
+        res_code, res_message = self._parse_SMTP_response(1024)
+        if res_code != data[1]:
+            self._send_QUIT()
+            return 1
+
         # TODO: send data
+        self._send_SMTP_message(f'{self.message}\r\n'.encode())
+
+        end_msg = self._get_command('end_msg')
+        self._send_SMTP_message(end_msg[0].encode())
+        res_code, res_message = self._parse_SMTP_response(1024)
+        if res_code != end_msg[1]:
+            self._send_QUIT()
+            return 1
+
         # TODO: QUIT
+        self._send_QUIT
         # TODO: 221 closing response check
 
         # Every errors must be exited with QUIT
 
-        # 500 means SMTP is implemented, but not ESMTP
         # if error.code == 500 or 502: TLS=false || QUIT
-        pass
+        exit()
 
 
 if __name__ == '__main__':
-    pass
+    name = input('Who are you?: ')
+    receiver = input('Receiver email: ')
+    message = input('Message: ')
+
+    smtp = SMTP_CLIENT(name, receiver, message)
+    smtp.send_mail()
